@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mark Attendance</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<script type="module">
+import { initializeApp }        from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, doc, getDoc, setDoc, onSnapshot }
+  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+// ─── PASTE YOUR FIREBASE CONFIG HERE (same as teacher.html) ─────────
+const firebaseConfig = {
+  apiKey: "AIzaSyDWZG5nrafLHIkT8oYJayr9PbSdBUxHb2w",
+  authDomain: "fast-attendance-1ded1.firebaseapp.com",
+  projectId: "fast-attendance-1ded1",
+  storageBucket: "fast-attendance-1ded1.firebasestorage.app",
+  messagingSenderId: "117764317334",
+  appId: "1:117764317334:web:25aa4312dec20a6928e2b7"
+};
+// ────────────────────────────────────────────────────────────────────
+
+const app = initializeApp(firebaseConfig);
+const db  = getFirestore(app);
+
+// ─── ROSTER — for name lookup by roll ───────────────────────────────
+const ROSTER = {
+  "22L-7998": "Laiba Nadeem",
+  "24L-0001": "Muhammad Anas",
+  "24L-0707": "Iman Abid",
+  "24L-2549": "Syed Saad Ali",
+  "24L-3001": "Romesha Afzaal",
+  "24L-3002": "Muhammad Abdullah Rasheed",
+  "24L-3004": "Muhammad Anas",
+  "24L-3006": "Muhammad Haider Mughal",
+  "24L-3007": "Muhammad Husnain Khan",
+  "24L-3017": "Aqsa Ehtesham",
+  "24L-3019": "Muhammad Huzaifa",
+  "24L-3022": "Hasan Butt",
+  "24L-3023": "Muhammad Shehryar Waheed",
+  "24L-3024": "Aliza Nadeem",
+  "24L-3029": "Abdul Ahad Shams",
+  "24L-3032": "Rai Muhammad Umais Kharal",
+  "24L-3033": "Aliza Vahidy",
+  "24L-3038": "Zunaira Tahir",
+  "24L-3042": "Khadija Rao",
+  "24L-3047": "Muhammad Babar Shahzad",
+  "24L-3055": "Sharjeel Shahid",
+  "24L-3058": "Adnan Ali Khan",
+  "24L-3059": "Abdul Rehman",
+  "24L-3063": "Muhammad Muazzam Mahmood",
+  "24L-3065": "Hania Zahra",
+  "24L-3071": "Muhammad Abdullah",
+  "24L-3073": "Muhammad Hassan Ashraf",
+  "24L-3075": "Fatima Asif",
+  "24L-3076": "Muhammad Ayub Butt",
+  "24L-3082": "Minahil Basalat",
+  "24L-3084": "Kainat Afzal",
+  "24L-3086": "Hamza Abbas",
+  "24L-3087": "Kabeer Ahmed Shahzeb",
+  "24L-3095": "Arqam Hafeez",
+};
+
+// ─── STATE ───────────────────────────────────────────────────────────
+let sessionData = null;
+let submitted   = false;
+
+function fp() {
+  const n = navigator;
+  const raw = [n.userAgent, n.language, screen.width, screen.height,
+               screen.colorDepth, n.hardwareConcurrency||0, n.platform].join('|');
+  let h = 0;
+  for (let i = 0; i < raw.length; i++) { h = ((h << 5) - h) + raw.charCodeAt(i); h |= 0; }
+  return Math.abs(h).toString(16).toUpperCase().padStart(8,'0');
+}
+
+function getTokenFromURL() {
+  try { return new URLSearchParams(window.location.search).get('token') || ''; } catch { return ''; }
+}
+
+// ─── LISTEN FOR SESSION ──────────────────────────────────────────────
+onSnapshot(doc(db, 'session', 'current'), snap => {
+  if (!snap.exists()) { showNoSession(); return; }
+  const data = snap.data();
+  sessionData = data;
+  if (!data.active) { showNoSession(); return; }
+  showForm(data);
+});
+
+function showNoSession() {
+  document.getElementById('session-label').textContent = 'No active session';
+  document.getElementById('course-label').textContent  = 'Ask your teacher to start one.';
+  document.getElementById('form-area').innerHTML = `
+    <div class="card">
+      <div style="text-align:center;padding:28px;color:var(--muted);font-family:var(--mono);font-size:12px;line-height:2">
+        ⬡ No active session<br>Ask your teacher to start one
+      </div>
+    </div>`;
+}
+
+function showForm(data) {
+  if (submitted) return;
+  document.getElementById('session-label').textContent = data.course || 'Attendance';
+  document.getElementById('course-label').textContent  = `${data.teacher || ''} · ${data.date || ''}`;
+
+  const prefill = getTokenFromURL();
+
+  document.getElementById('form-area').innerHTML = `
+    <div class="card">
+      <div class="card-title">Your Details</div>
+      <div class="form-body">
+        <div class="form-field">
+          <label>Roll Number</label>
+          <input class="form-input" id="s-roll" placeholder="e.g. 24L-3001" autocomplete="off"
+            oninput="autofillName(this.value)">
+        </div>
+        <div class="form-field">
+          <label>Full Name</label>
+          <input class="form-input" id="s-name" placeholder="Auto-filled from roll number" readonly
+            style="opacity:.7;cursor:not-allowed">
+        </div>
+        <div class="divider">Token</div>
+        <div class="form-field">
+          <label>6-character token</label>
+          <input class="token-entry" id="s-token" maxlength="6" placeholder="A3F9K2"
+            autocomplete="off" value="${prefill}"
+            oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9]/g,'')">
+        </div>
+        <div id="s-checks" class="check-list" style="display:none"></div>
+        <button class="submit-btn" id="s-btn" onclick="submitAttendance()">Mark Present</button>
+      </div>
+    </div>
+    <div id="s-result"></div>`;
+}
+
+// Auto-fill name from roll number
+window.autofillName = (roll) => {
+  const clean = roll.trim().toUpperCase();
+  // Try exact, then case-insensitive
+  const name = ROSTER[clean] || ROSTER[roll.trim()] || '';
+  const nameEl = document.getElementById('s-name');
+  if (nameEl) {
+    nameEl.value = name;
+    nameEl.style.opacity = name ? '1' : '.7';
+  }
+};
+
+// ─── SUBMIT ──────────────────────────────────────────────────────────
+window.submitAttendance = async () => {
+  const roll  = (document.getElementById('s-roll')?.value  || '').trim().toUpperCase();
+  const name  = (document.getElementById('s-name')?.value  || '').trim();
+  const token = (document.getElementById('s-token')?.value || '').trim().toUpperCase();
+  const fingerprint = fp();
+  const checks = document.getElementById('s-checks');
+  const btn    = document.getElementById('s-btn');
+  const result = document.getElementById('s-result');
+
+  if (!roll)  { flashInput('s-roll',  'Roll number required');  return; }
+  if (!name)  { flashInput('s-roll',  'Roll number not found in roster'); return; }
+  if (!token) { flashInput('s-token', 'Token required'); return; }
+
+  btn.disabled = true;
+  btn.textContent = 'Verifying...';
+  checks.style.display = 'flex';
+  checks.innerHTML = `
+    <div class="check-item" id="chk-roll"><span class="ci">◌</span> Checking roll number...</div>
+    <div class="check-item" id="chk-token"><span class="ci">◌</span> Validating token...</div>
+    <div class="check-item" id="chk-fp"><span class="ci">◌</span> Checking device...</div>`;
+
+  await delay(300);
+
+  // 1. Roll check
+  const rollOk = !!ROSTER[roll];
+  setCheck('chk-roll', rollOk, rollOk ? `Roll ${roll} found` : `Roll ${roll} not in roster`);
+  if (!rollOk) { showError(result, 'Roll number not in roster.'); resetBtn(btn); return; }
+
+  await delay(200);
+
+  // 2. Token check — fetch live from Firestore
+  let sessionSnap;
+  try { sessionSnap = await getDoc(doc(db, 'session', 'current')); }
+  catch { showError(result, 'Network error. Check your connection.'); resetBtn(btn); return; }
+
+  const live    = sessionSnap.data();
+  const tokenOk = live?.active && token === live?.token && Date.now() < live?.tokenExpiry;
+  setCheck('chk-token', tokenOk, tokenOk ? `Token valid` : `Token invalid or expired`);
+  if (!tokenOk) { showError(result, 'Token is invalid or has expired. Get the latest token.'); resetBtn(btn); return; }
+
+  await delay(200);
+
+  // 3. Fingerprint — check if this device already submitted
+  const existingDoc = await getDoc(doc(db, 'submissions', fingerprint));
+  const fpOk = !existingDoc.exists();
+  setCheck('chk-fp', fpOk, fpOk ? `Device unique` : `Already submitted from this device`);
+  if (!fpOk) { showError(result, 'You have already marked attendance from this device.'); resetBtn(btn); return; }
+
+  // ✓ All checks passed — write to Firestore
+  try {
+    await setDoc(doc(db, 'submissions', fingerprint), {
+      roll, name, fp: fingerprint,
+      token, time: Date.now(),
+    });
+  } catch(e) {
+    showError(result, 'Submission failed. Check your internet connection.'); resetBtn(btn); return;
+  }
+
+  submitted = true;
+  result.innerHTML = `
+    <div class="status-box success">
+      <span class="status-icon">✓</span>
+      <div class="status-title">Attendance Marked!</div>
+      <div class="status-sub">
+        ${name}<br>${roll}<br>
+        ${new Date().toLocaleTimeString()}<br>
+        Token: ${token}
+      </div>
+    </div>`;
+  btn.style.display = 'none';
+};
+
+// ─── HELPERS ─────────────────────────────────────────────────────────
+function setCheck(id, ok, msg) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.className = 'check-item ' + (ok ? 'done' : 'fail');
+  el.innerHTML = `<span class="ci">${ok ? '✓' : '✗'}</span> ${msg}`;
+}
+
+function showError(el, msg) {
+  el.innerHTML = `
+    <div class="status-box error">
+      <span class="status-icon">✗</span>
+      <div class="status-title">Rejected</div>
+      <div class="status-sub">${msg}</div>
+    </div>`;
+}
+
+function resetBtn(btn) {
+  btn.disabled = false;
+  btn.textContent = 'Try Again';
+}
+
+function flashInput(id, msg) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.style.borderColor = 'var(--danger)';
+  el.placeholder = msg;
+  setTimeout(() => { el.style.borderColor = ''; }, 2000);
+}
+
+function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+</script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0a0f;--surface:#13131a;--surface2:#1c1c26;--border:#2a2a38;
+  --accent:#7c6af7;--accent2:#4fc3a1;--danger:#f04f6a;--warn:#f0a844;
+  --text:#e8e6f0;--muted:#7a7890;
+  --mono:'JetBrains Mono',monospace;--sans:'DM Sans',sans-serif;
+}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px;min-height:100vh}
+
+.hero{text-align:center;padding:32px 20px 16px;border-bottom:1px solid var(--border)}
+.hero h1{font-size:22px;font-weight:600;font-family:var(--mono);letter-spacing:-.01em}
+.hero p{color:var(--muted);font-size:12px;margin-top:6px;font-family:var(--mono)}
+
+.page{max-width:420px;margin:0 auto;padding:16px;display:flex;flex-direction:column;gap:14px}
+
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px}
+.card-title{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:12px}
+.form-body{display:flex;flex-direction:column;gap:14px}
+
+.form-field{display:flex;flex-direction:column;gap:6px}
+.form-field label{font-size:10px;font-family:var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.form-input{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:11px 14px;color:var(--text);font-family:var(--sans);font-size:14px;outline:none;transition:border .15s;width:100%}
+.form-input:focus{border-color:var(--accent)}
+.token-entry{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:11px 14px;color:var(--accent);font-family:var(--mono);font-size:22px;letter-spacing:.25em;text-align:center;outline:none;width:100%;text-transform:uppercase;transition:border .15s}
+.token-entry:focus{border-color:var(--accent)}
+
+.submit-btn{width:100%;padding:14px;background:var(--accent);color:#fff;border:none;border-radius:10px;font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;font-weight:700;cursor:pointer;transition:all .2s}
+.submit-btn:hover:not(:disabled){background:#6a58e8;transform:translateY(-2px);box-shadow:0 8px 24px rgba(124,106,247,.3)}
+.submit-btn:disabled{opacity:.4;cursor:not-allowed;transform:none;box-shadow:none}
+
+.check-list{display:flex;flex-direction:column;gap:7px}
+.check-item{display:flex;align-items:center;gap:8px;font-size:11px;font-family:var(--mono);color:var(--muted)}
+.check-item.done{color:var(--accent2)}.check-item.fail{color:var(--danger)}
+.ci{width:16px;text-align:center;font-size:13px}
+
+.status-box{border-radius:10px;padding:16px;text-align:center}
+.status-box.success{background:rgba(79,195,161,.1);border:1px solid rgba(79,195,161,.3);color:var(--accent2)}
+.status-box.error{background:rgba(240,79,106,.1);border:1px solid rgba(240,79,106,.3);color:var(--danger)}
+.status-icon{font-size:32px;display:block;margin-bottom:8px}
+.status-title{font-size:15px;font-weight:700;font-family:var(--mono);margin-bottom:5px}
+.status-sub{font-size:11px;color:var(--muted);font-family:var(--mono);line-height:1.8}
+
+.divider{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:10px;font-family:var(--mono)}
+.divider::before,.divider::after{content:'';flex:1;height:1px;background:var(--border)}
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <h1 id="session-label">Attendance</h1>
+  <p id="course-label">Connecting...</p>
+</div>
+
+<div class="page">
+  <div id="form-area">
+    <div class="card">
+      <div style="text-align:center;padding:20px;color:var(--muted);font-family:var(--mono);font-size:12px">
+        Connecting to session...
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

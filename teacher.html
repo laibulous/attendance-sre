@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Attendance — Teacher</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<!-- SheetJS for xlsx generation -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- Firebase -->
+<script type="module">
+import { initializeApp }          from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, deleteDoc, getDocs }
+  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+// ─── PASTE YOUR FIREBASE CONFIG HERE ────────────────────────────────
+// Import the functions you need from the SDKs you need
+
+// TODO: Add SDKs for Firebase products that you want to use
+// https://firebase.google.com/docs/web/setup#available-libraries
+
+// Your web app's Firebase configuration
+const firebaseConfig = {
+  apiKey: "AIzaSyDWZG5nrafLHIkT8oYJayr9PbSdBUxHb2w",
+  authDomain: "fast-attendance-1ded1.firebaseapp.com",
+  projectId: "fast-attendance-1ded1",
+  storageBucket: "fast-attendance-1ded1.firebasestorage.app",
+  messagingSenderId: "117764317334",
+  appId: "1:117764317334:web:25aa4312dec20a6928e2b7"
+};
+
+// Initialize Firebase
+
+// ────────────────────────────────────────────────────────────────────
+
+const app = initializeApp(firebaseConfig);
+const db  = getFirestore(app);
+
+// ─── STUDENT ROSTER (from your xlsx — roll: name) ───────────────────
+const ROSTER = {
+  "22L-7998": "Laiba Nadeem",
+  "24L-0001": "Muhammad Anas",
+  "24L-0707": "Iman Abid",
+  "24L-2549": "Syed Saad Ali",
+  "24L-3001": "Romesha Afzaal",
+  "24L-3002": "Muhammad Abdullah Rasheed",
+  "24L-3004": "Muhammad Anas",
+  "24L-3006": "Muhammad Haider Mughal",
+  "24L-3007": "Muhammad Husnain Khan",
+  "24L-3017": "Aqsa Ehtesham",
+  "24L-3019": "Muhammad Huzaifa",
+  "24L-3022": "Hasan Butt",
+  "24L-3023": "Muhammad Shehryar Waheed",
+  "24L-3024": "Aliza Nadeem",
+  "24L-3029": "Abdul Ahad Shams",
+  "24L-3032": "Rai Muhammad Umais Kharal",
+  "24L-3033": "Aliza Vahidy",
+  "24L-3038": "Zunaira Tahir",
+  "24L-3042": "Khadija Rao",
+  "24L-3047": "Muhammad Babar Shahzad",
+  "24L-3055": "Sharjeel Shahid",
+  "24L-3058": "Adnan Ali Khan",
+  "24L-3059": "Abdul Rehman",
+  "24L-3063": "Muhammad Muazzam Mahmood",
+  "24L-3065": "Hania Zahra",
+  "24L-3071": "Muhammad Abdullah",
+  "24L-3073": "Muhammad Hassan Ashraf",
+  "24L-3075": "Fatima Asif",
+  "24L-3076": "Muhammad Ayub Butt",
+  "24L-3082": "Minahil Basalat",
+  "24L-3084": "Kainat Afzal",
+  "24L-3086": "Hamza Abbas",
+  "24L-3087": "Kabeer Ahmed Shahzeb",
+  "24L-3095": "Arqam Hafeez",
+};
+
+// ─── STATE ─────────────────────────────────────────────────────────
+let session      = null;
+let curToken     = null;
+let tokenExpiry  = 0;
+let rotTimer     = null;
+let cdTimer      = null;
+let submissions  = {};   // roll → {name, time, fp}
+let unsubSnap    = null;
+
+// ─── UTILS ─────────────────────────────────────────────────────────
+function genToken() {
+  const c = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  return Array.from({length:6}, () => c[Math.floor(Math.random()*c.length)]).join('');
+}
+
+function todayDDMMYYYY() {
+  const d = new Date();
+  const dd   = String(d.getDate()).padStart(2,'0');
+  const mm   = String(d.getMonth()+1).padStart(2,'0');
+  const yyyy = d.getFullYear();
+  return `${dd}/${mm}/${yyyy}`;
+}
+
+// ─── SESSION ───────────────────────────────────────────────────────
+window.toggleSession = async () => {
+  if (session) { endSession(); } else { startSession(); }
+};
+
+async function startSession() {
+  const course   = document.getElementById('course-name').value.trim() || 'Unnamed Course';
+  const teacher  = document.getElementById('teacher-name').value.trim() || 'Teacher';
+  const rotation = parseInt(document.getElementById('rotation-time').value) || 90;
+  const date     = document.getElementById('session-date').value || todayDDMMYYYY();
+
+  session     = { course, teacher, rotation, date, startedAt: new Date() };
+  submissions = {};
+  curToken    = null;
+
+  // Clear old submissions in Firestore
+  const snap = await getDocs(collection(db, 'submissions'));
+  await Promise.all(snap.docs.map(d => deleteDoc(d.ref)));
+
+  // Write session doc
+  await setDoc(doc(db, 'session', 'current'), {
+    course, teacher, rotation, date,
+    active: true,
+    startedAt: session.startedAt.toISOString(),
+  });
+
+  // UI
+  document.getElementById('session-title').textContent = course;
+  document.getElementById('session-sub').textContent   = `${teacher} · ${date} · Started ${session.startedAt.toLocaleTimeString()}`;
+  setBadge(true);
+  document.getElementById('toggle-btn').textContent    = 'End Session';
+  document.getElementById('toggle-btn').className      = 'btn btn-danger';
+  document.getElementById('config-card').style.display = 'none';
+  document.getElementById('qr-card').style.display     = 'block';
+  document.getElementById('stats-row').style.display   = 'flex';
+  document.getElementById('log-card').style.display    = 'block';
+  document.getElementById('rotation-display').textContent = rotation;
+
+  // Listen for incoming submissions
+  unsubSnap = onSnapshot(collection(db, 'submissions'), snap => {
+    snap.docChanges().forEach(change => {
+      if (change.type === 'added' || change.type === 'modified') {
+        const d = change.doc.data();
+        submissions[d.roll] = d;
+        renderLog();
+      }
+    });
+  });
+
+  rotateToken();
+}
+
+async function endSession() {
+  clearInterval(rotTimer);
+  clearInterval(cdTimer);
+  if (unsubSnap) unsubSnap();
+
+  // Mark session inactive in Firestore
+  await setDoc(doc(db, 'session', 'current'), { active: false }, { merge: true });
+
+  const count = Object.keys(submissions).length;
+  document.getElementById('session-title').textContent = 'Session Ended';
+  document.getElementById('session-sub').textContent   = `${count} student(s) marked present`;
+  setBadge(false);
+  document.getElementById('toggle-btn').textContent    = 'Start Session';
+  document.getElementById('toggle-btn').className      = 'btn btn-primary';
+  document.getElementById('config-card').style.display = 'block';
+  document.getElementById('qr-card').style.display     = 'none';
+
+  // Enable xlsx download
+  document.getElementById('download-card').style.display = 'block';
+
+  session = null;
+}
+
+// ─── TOKEN ROTATION ───────────────────────────────────────────────
+async function rotateToken() {
+  curToken    = genToken();
+  tokenExpiry = Date.now() + session.rotation * 1000;
+
+  await setDoc(doc(db, 'session', 'current'), {
+    token: curToken, tokenExpiry
+  }, { merge: true });
+
+  renderQR(curToken);
+  document.getElementById('token-below').textContent = curToken;
+  startCountdown();
+
+  clearInterval(rotTimer);
+  rotTimer = setInterval(rotateToken, session.rotation * 1000);
+}
+
+function renderQR(token) {
+  const studentBase = window.location.href.replace('teacher.html','student.html');
+  const url = studentBase + '?token=' + token;
+  const c   = document.getElementById('qr-container');
+  c.innerHTML = '';
+  new QRCode(c, { text: url, width: 200, height: 200,
+    colorDark: '#000000', colorLight: '#ffffff',
+    correctLevel: QRCode.CorrectLevel.M });
+}
+
+function startCountdown() {
+  clearInterval(cdTimer);
+  const total = session.rotation;
+  const circ  = 2 * Math.PI * 21;
+  const fg    = document.getElementById('ring-fg');
+  const num   = document.getElementById('ring-num');
+  fg.style.strokeDasharray = circ;
+
+  cdTimer = setInterval(() => {
+    const rem = Math.ceil((tokenExpiry - Date.now()) / 1000);
+    if (rem <= 0) { clearInterval(cdTimer); return; }
+    fg.style.strokeDashoffset = circ * (1 - rem/total);
+    num.textContent = rem;
+    const lvl = rem <= 10 ? 'danger' : rem <= 20 ? 'warn' : '';
+    fg.className  = 'ring-fg'  + (lvl ? ' '+lvl : '');
+    num.className = 'ring-num' + (lvl ? ' '+lvl : '');
+  }, 500);
+}
+
+// ─── LOG RENDER ───────────────────────────────────────────────────
+function renderLog() {
+  const present = Object.keys(submissions).length;
+  const total   = Object.keys(ROSTER).length;
+  const absent  = total - present;
+  document.getElementById('present-count').textContent = present;
+  document.getElementById('absent-count').textContent  = absent;
+
+  const c = document.getElementById('log-container');
+  const entries = Object.values(submissions).sort((a,b) => a.time - b.time);
+  if (!entries.length) { c.innerHTML = '<div class="empty-log">No submissions yet</div>'; return; }
+
+  c.innerHTML = entries.map(e => `
+    <div class="log-row">
+      <div style="flex:1">
+        <div class="log-name">${e.name}</div>
+        <div class="log-meta">${e.roll} · [${e.fp}]</div>
+      </div>
+      <span class="chip">P</span>
+      <div class="log-time">${new Date(e.time).toLocaleTimeString()}</div>
+    </div>`).join('');
+}
+
+// ─── XLSX DOWNLOAD ────────────────────────────────────────────────
+window.downloadXlsx = () => {
+  const fileInput = document.getElementById('xlsx-upload');
+  if (!fileInput.files.length) { alert('Please upload your attendance sheet first.'); return; }
+  const reader = new FileReader();
+  reader.onload = e => {
+    const wb  = XLSX.read(e.target.result, { type: 'array' });
+    const ws  = wb.Sheets[wb.SheetNames[0]];
+    const ref = XLSX.utils.decode_range(ws['!ref']);
+
+    // Find first empty column after E (col index 5 = F)
+    // Check row 1 for existing date headers
+    const savedDate = document.getElementById('saved-date').value ||
+                      (session ? session.date : null) ||
+                      todayDDMMYYYY();
+
+    let targetCol = 5; // 0-indexed col F
+    // Scan row 1 to find if this date already exists (edit mode)
+    let existingCol = -1;
+    for (let c = 5; c <= ref.e.c; c++) {
+      const cellAddr = XLSX.utils.encode_cell({ r: 0, c });
+      const cell = ws[cellAddr];
+      if (cell && cell.v === savedDate) { existingCol = c; break; }
+      if (!cell || cell.v === undefined || cell.v === null || cell.v === '') { targetCol = c; break; }
+      targetCol = c + 1;
+    }
+    if (existingCol !== -1) targetCol = existingCol;
+
+    // Write date header in row 1
+    const headerAddr = XLSX.utils.encode_cell({ r: 0, c: targetCol });
+    ws[headerAddr] = { t: 's', v: savedDate };
+
+    // Style helpers
+    const headerStyle = {
+      font:      { bold: true, color: { rgb: 'FFFFFF' } },
+      fill:      { fgColor: { rgb: '4F46E5' } },
+      alignment: { horizontal: 'center' },
+      border: {
+        top:    { style: 'thin', color: { rgb: 'CCCCCC' } },
+        bottom: { style: 'thin', color: { rgb: 'CCCCCC' } },
+        left:   { style: 'thin', color: { rgb: 'CCCCCC' } },
+        right:  { style: 'thin', color: { rgb: 'CCCCCC' } },
+      }
+    };
+    ws[headerAddr].s = headerStyle;
+
+    // Write P/A for each student (rows 2–35, skip footer row 36)
+    for (let r = 1; r <= 34; r++) {
+      const rollCell = ws[XLSX.utils.encode_cell({ r, c: 1 })];
+      if (!rollCell) continue;
+      const roll   = String(rollCell.v).trim();
+      const isHere = !!submissions[roll];
+      const val    = isHere ? 'P' : 'A';
+      const addr   = XLSX.utils.encode_cell({ r, c: targetCol });
+      ws[addr] = {
+        t: 's', v: val,
+        s: {
+          font:      { bold: true, color: { rgb: isHere ? '166534' : '991B1B' } },
+          fill:      { fgColor: { rgb: isHere ? 'DCFCE7' : 'FEE2E2' } },
+          alignment: { horizontal: 'center' },
+          border: {
+            top:    { style: 'thin', color: { rgb: 'CCCCCC' } },
+            bottom: { style: 'thin', color: { rgb: 'CCCCCC' } },
+            left:   { style: 'thin', color: { rgb: 'CCCCCC' } },
+            right:  { style: 'thin', color: { rgb: 'CCCCCC' } },
+          }
+        }
+      };
+    }
+
+    // Extend sheet range if we added a new column
+    if (targetCol > ref.e.c) {
+      ref.e.c = targetCol;
+      ws['!ref'] = XLSX.utils.encode_range(ref);
+    }
+
+    // Set column width for new date column
+    if (!ws['!cols']) ws['!cols'] = [];
+    ws['!cols'][targetCol] = { wch: 14 };
+
+    XLSX.writeFile(wb, 'AttendanceSheet_updated.xlsx');
+  };
+  reader.readAsArrayBuffer(fileInput.files[0]);
+};
+
+// ─── PAST ATTENDANCE EDIT ────────────────────────────────────────
+window.loadPastDate = () => {
+  const fileInput = document.getElementById('edit-xlsx-upload');
+  if (!fileInput.files.length) { alert('Upload the sheet first.'); return; }
+  const reader = new FileReader();
+  reader.onload = e => {
+    const wb  = XLSX.read(e.target.result, { type: 'array' });
+    const ws  = wb.Sheets[wb.SheetNames[0]];
+    const ref = XLSX.utils.decode_range(ws['!ref']);
+
+    // Collect all date columns from row 1
+    const dates = [];
+    for (let c = 5; c <= ref.e.c; c++) {
+      const cell = ws[XLSX.utils.encode_cell({ r: 0, c })];
+      if (cell && cell.v) dates.push({ col: c, date: String(cell.v) });
+    }
+    if (!dates.length) { alert('No attendance columns found yet.'); return; }
+
+    // Populate date picker
+    const sel = document.getElementById('edit-date-select');
+    sel.innerHTML = dates.map(d => `<option value="${d.col}">${d.date}</option>`).join('');
+    document.getElementById('edit-date-row').style.display = 'flex';
+    window._editWb = wb;
+    window._editWs = ws;
+    loadEditTable();
+  };
+  reader.readAsArrayBuffer(fileInput.files[0]);
+};
+
+window.loadEditTable = () => {
+  const ws  = window._editWs;
+  if (!ws) return;
+  const col = parseInt(document.getElementById('edit-date-select').value);
+  const tbody = document.getElementById('edit-tbody');
+  tbody.innerHTML = '';
+
+  for (let r = 1; r <= 34; r++) {
+    const rollCell = ws[XLSX.utils.encode_cell({ r, c: 1 })];
+    const nameCell = ws[XLSX.utils.encode_cell({ r, c: 2 })];
+    const attCell  = ws[XLSX.utils.encode_cell({ r, c: col })];
+    if (!rollCell) continue;
+    const roll = String(rollCell.v).trim();
+    const name = nameCell ? nameCell.v : '';
+    const val  = attCell ? String(attCell.v).trim() : 'A';
+    tbody.innerHTML += `
+      <tr>
+        <td class="edit-roll">${roll}</td>
+        <td class="edit-name">${name}</td>
+        <td>
+          <select class="edit-select ${val==='P'?'sel-p':'sel-a'}" data-row="${r}" data-col="${col}" onchange="updateCell(this)">
+            <option value="P" ${val==='P'?'selected':''}>P — Present</option>
+            <option value="A" ${val==='A'?'selected':''}>A — Absent</option>
+          </select>
+        </td>
+      </tr>`;
+  }
+  document.getElementById('edit-table-wrap').style.display = 'block';
+};
+
+window.updateCell = (sel) => {
+  sel.className = 'edit-select ' + (sel.value==='P' ? 'sel-p' : 'sel-a');
+  const r   = parseInt(sel.dataset.row);
+  const c   = parseInt(sel.dataset.col);
+  const ws  = window._editWs;
+  const val = sel.value;
+  const addr = XLSX.utils.encode_cell({ r, c });
+  ws[addr] = {
+    t: 's', v: val,
+    s: {
+      font:      { bold: true, color: { rgb: val==='P' ? '166534' : '991B1B' } },
+      fill:      { fgColor: { rgb: val==='P' ? 'DCFCE7' : 'FEE2E2' } },
+      alignment: { horizontal: 'center' },
+    }
+  };
+};
+
+window.saveEditedXlsx = () => {
+  if (!window._editWb) return;
+  XLSX.writeFile(window._editWb, 'AttendanceSheet_edited.xlsx');
+};
+
+// ─── MISC UI ──────────────────────────────────────────────────────
+function setBadge(active) {
+  const b = document.getElementById('session-badge');
+  b.className = 'badge ' + (active ? 'active' : 'inactive');
+  b.innerHTML = active
+    ? '<span class="dot pulse"></span> Live'
+    : '<span class="dot"></span> Inactive';
+}
+
+function todayDDMMYYYY() {
+  const d = new Date();
+  return [String(d.getDate()).padStart(2,'0'),
+          String(d.getMonth()+1).padStart(2,'0'),
+          d.getFullYear()].join('/');
+}
+
+// Set default date
+document.getElementById('session-date').value = todayDDMMYYYY();
+
+</script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0a0f;--surface:#13131a;--surface2:#1c1c26;--border:#2a2a38;
+  --accent:#7c6af7;--accent2:#4fc3a1;--danger:#f04f6a;--warn:#f0a844;
+  --text:#e8e6f0;--muted:#7a7890;
+  --mono:'JetBrains Mono',monospace;--sans:'DM Sans',sans-serif;
+}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px;min-height:100vh}
+.page{display:flex;flex-direction:column;gap:16px;padding:16px;max-width:760px;margin:0 auto}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:100}
+.topbar-title{font-family:var(--mono);font-size:13px;font-weight:700;letter-spacing:.06em}
+.topbar-sub{font-size:11px;color:var(--muted);font-family:var(--mono)}
+
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px}
+.card-title{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:12px}
+.card-title.row{display:flex;justify-content:space-between;align-items:center}
+
+.btn{padding:9px 18px;border-radius:8px;border:none;cursor:pointer;font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;font-weight:600;transition:all .15s}
+.btn-primary{background:var(--accent);color:#fff}.btn-primary:hover{background:#6a58e8}
+.btn-danger{background:rgba(240,79,106,.15);color:var(--danger);border:1px solid rgba(240,79,106,.3)}.btn-danger:hover{background:rgba(240,79,106,.25)}
+.btn-success{background:rgba(79,195,161,.15);color:var(--accent2);border:1px solid rgba(79,195,161,.3)}.btn-success:hover{background:rgba(79,195,161,.25)}
+.btn-sm{padding:5px 12px;font-size:10px}
+
+.badge{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;font-size:11px;font-family:var(--mono)}
+.badge.active{background:rgba(79,195,161,.15);color:var(--accent2);border:1px solid rgba(79,195,161,.3)}
+.badge.inactive{background:rgba(240,79,106,.12);color:var(--danger);border:1px solid rgba(240,79,106,.25)}
+.dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.dot.pulse{animation:pulse 1.5s infinite}
+
+.session-header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}
+.session-info h2{font-size:18px;font-weight:600;font-family:var(--mono)}
+.session-info p{color:var(--muted);font-size:12px;margin-top:2px}
+
+.config-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.input-group{display:flex;flex-direction:column;gap:5px}
+.input-group label{font-size:10px;font-family:var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.input-group input{background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:8px 12px;color:var(--text);font-family:var(--mono);font-size:12px;outline:none;transition:border .15s}
+.input-group input:focus{border-color:var(--accent)}
+
+.qr-wrap{display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap}
+.qr-block{display:flex;flex-direction:column;align-items:center;gap:8px;flex-shrink:0}
+.qr-box{background:#fff;border-radius:12px;padding:14px;line-height:0}
+.token-label-below{font-family:var(--mono);font-size:22px;font-weight:700;letter-spacing:.25em;color:var(--accent);text-align:center}
+.token-hint{font-size:10px;color:var(--muted);font-family:var(--mono);text-transform:uppercase;letter-spacing:.06em}
+
+.qr-meta{flex:1;min-width:180px;display:flex;flex-direction:column;gap:12px}
+.timer-ring{display:flex;align-items:center;gap:12px}
+.ring-wrap{position:relative;width:52px;height:52px;flex-shrink:0}
+.ring-wrap svg{position:absolute;top:0;left:0;transform:rotate(-90deg)}
+.ring-bg{fill:none;stroke:var(--border);stroke-width:4}
+.ring-fg{fill:none;stroke:var(--accent);stroke-width:4;stroke-linecap:round;transition:stroke-dashoffset .9s linear}
+.ring-fg.warn{stroke:var(--warn)}.ring-fg.danger{stroke:var(--danger)}
+.ring-num{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:14px;font-weight:700;color:var(--accent)}
+.ring-num.warn{color:var(--warn)}.ring-num.danger{color:var(--danger)}
+
+.stats-row{display:flex;gap:10px}
+.stat{flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px;text-align:center}
+.stat-num{font-family:var(--mono);font-size:24px;font-weight:700}
+.stat-num.green{color:var(--accent2)}.stat-num.red{color:var(--danger)}
+.stat-label{font-size:10px;color:var(--muted);margin-top:2px}
+
+.log-scroll{max-height:280px;overflow-y:auto}
+.log-scroll::-webkit-scrollbar{width:4px}
+.log-scroll::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+.log-row{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--border)}
+.log-row:last-child{border-bottom:none}
+.log-name{font-weight:500;font-size:13px}
+.log-meta{font-size:10px;color:var(--muted);font-family:var(--mono)}
+.log-time{font-family:var(--mono);font-size:10px;color:var(--muted);white-space:nowrap}
+.chip{font-size:11px;font-family:var(--mono);font-weight:700;padding:3px 9px;border-radius:6px;background:rgba(79,195,161,.15);color:var(--accent2);border:1px solid rgba(79,195,161,.3)}
+.empty-log{text-align:center;padding:28px;color:var(--muted);font-size:12px;font-family:var(--mono)}
+
+/* Download section */
+.upload-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.file-label{padding:8px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:7px;cursor:pointer;font-family:var(--mono);font-size:11px;color:var(--muted);transition:border .15s}
+.file-label:hover{border-color:var(--accent);color:var(--text)}
+input[type=file]{display:none}
+.file-name{font-size:11px;font-family:var(--mono);color:var(--muted)}
+
+/* Edit table */
+.edit-table{width:100%;border-collapse:collapse;font-size:12px}
+.edit-table th{font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);padding:6px 8px;text-align:left;border-bottom:1px solid var(--border)}
+.edit-table td{padding:6px 8px;border-bottom:1px solid var(--border)}
+.edit-roll{font-family:var(--mono);font-size:11px;color:var(--muted)}
+.edit-name{font-size:13px}
+.edit-select{background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-family:var(--mono);font-size:11px;outline:none;cursor:pointer;width:120px}
+.sel-p{color:var(--accent2);border-color:rgba(79,195,161,.4)}
+.sel-a{color:var(--danger);border-color:rgba(240,79,106,.4)}
+.edit-scroll{max-height:340px;overflow-y:auto}
+
+.section-divider{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:10px;font-family:var(--mono);margin:4px 0}
+.section-divider::before,.section-divider::after{content:'';flex:1;height:1px;background:var(--border)}
+
+::-webkit-scrollbar{width:5px}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div>
+    <div class="topbar-title">⬡ ATTENDANCE — TEACHER</div>
+    <div class="topbar-sub">Firebase real-time · v2</div>
+  </div>
+  <span class="badge inactive" id="session-badge"><span class="dot"></span> Inactive</span>
+</div>
+
+<div class="page">
+
+  <!-- Session header -->
+  <div class="card">
+    <div class="session-header">
+      <div class="session-info">
+        <h2 id="session-title">No Active Session</h2>
+        <p id="session-sub">Configure below and start a session</p>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-primary" id="toggle-btn" onclick="toggleSession()">Start Session</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Config -->
+  <div class="card" id="config-card">
+    <div class="card-title">Session Config</div>
+    <div class="config-grid">
+      <div class="input-group" style="grid-column:1/-1">
+        <label>Course Name</label>
+        <input type="text" id="course-name" value="Software Quality Assurance">
+      </div>
+      <div class="input-group">
+        <label>Teacher Name</label>
+        <input type="text" id="teacher-name" value="Sir Ahmed">
+      </div>
+      <div class="input-group">
+        <label>Token Rotation (sec)</label>
+        <input type="number" id="rotation-time" value="90" min="30" max="300">
+      </div>
+      <div class="input-group" style="grid-column:1/-1">
+        <label>Session Date (DD/MM/YYYY)</label>
+        <input type="text" id="session-date" placeholder="07/05/2026">
+      </div>
+    </div>
+  </div>
+
+  <!-- Live QR -->
+  <div class="card" id="qr-card" style="display:none">
+    <div class="card-title">Live QR — scan or read token aloud</div>
+    <div class="qr-wrap">
+      <div class="qr-block">
+        <div class="qr-box" id="qr-container"></div>
+        <div class="token-label-below" id="token-below">——————</div>
+        <div class="token-hint">current token</div>
+      </div>
+      <div class="qr-meta">
+        <div class="timer-ring">
+          <div class="ring-wrap">
+            <svg width="52" height="52" viewBox="0 0 52 52">
+              <circle class="ring-bg" cx="26" cy="26" r="21"/>
+              <circle class="ring-fg" id="ring-fg" cx="26" cy="26" r="21"/>
+            </svg>
+            <div class="ring-num" id="ring-num">90</div>
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--muted);font-family:var(--mono);text-transform:uppercase;letter-spacing:.06em">Rotates in</div>
+            <div style="font-size:12px;margin-top:3px">Every <span id="rotation-display">90</span>s</div>
+          </div>
+        </div>
+        <div style="font-size:11px;color:var(--muted);font-family:var(--mono);line-height:1.9;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px">
+          Students scan QR with camera<br>
+          Or type token on student.html<br>
+          Token expires &amp; rotates automatically<br>
+          One submit per device enforced
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Stats -->
+  <div class="stats-row" id="stats-row" style="display:none">
+    <div class="stat"><div class="stat-num green" id="present-count">0</div><div class="stat-label">Present</div></div>
+    <div class="stat"><div class="stat-num red"   id="absent-count">34</div><div class="stat-label">Absent</div></div>
+  </div>
+
+  <!-- Live log -->
+  <div class="card" id="log-card" style="display:none">
+    <div class="card-title">Live Check-ins</div>
+    <div class="log-scroll" id="log-container">
+      <div class="empty-log">Waiting for submissions...</div>
+    </div>
+  </div>
+
+  <!-- Download xlsx (shown after session ends) -->
+  <div class="card" id="download-card" style="display:none">
+    <div class="card-title">Export Attendance Sheet</div>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.7">
+      Upload your <strong style="color:var(--text)">existing .xlsx</strong> — the system will add today's column with P/A for all 34 students, then download the updated file.
+    </p>
+    <input type="text" id="saved-date" placeholder="DD/MM/YYYY — auto-filled from session" style="background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:8px 12px;color:var(--text);font-family:var(--mono);font-size:12px;outline:none;width:100%;margin-bottom:10px">
+    <div class="upload-row">
+      <label class="file-label" for="xlsx-upload">📂 Choose .xlsx file</label>
+      <input type="file" id="xlsx-upload" accept=".xlsx" onchange="document.getElementById('fn1').textContent=this.files[0]?.name||''">
+      <span class="file-name" id="fn1">No file chosen</span>
+      <button class="btn btn-success" onclick="downloadXlsx()">⬇ Download Updated Sheet</button>
+    </div>
+  </div>
+
+  <!-- Edit past attendance -->
+  <div class="card">
+    <div class="card-title">Edit Past Attendance</div>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.7">
+      Upload a previously exported sheet to correct P/A values for any date.
+    </p>
+    <div class="upload-row" style="margin-bottom:10px">
+      <label class="file-label" for="edit-xlsx-upload">📂 Choose .xlsx file</label>
+      <input type="file" id="edit-xlsx-upload" accept=".xlsx" onchange="document.getElementById('fn2').textContent=this.files[0]?.name||''">
+      <span class="file-name" id="fn2">No file chosen</span>
+      <button class="btn btn-primary btn-sm" onclick="loadPastDate()">Load Dates</button>
+    </div>
+    <div id="edit-date-row" style="display:none;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+      <div class="input-group" style="flex:1;min-width:160px">
+        <label>Select Date to Edit</label>
+        <select id="edit-date-select" onchange="loadEditTable()" style="background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:8px 12px;color:var(--text);font-family:var(--mono);font-size:12px;outline:none">
+        </select>
+      </div>
+    </div>
+    <div id="edit-table-wrap" style="display:none">
+      <div class="edit-scroll">
+        <table class="edit-table">
+          <thead><tr><th>Roll</th><th>Name</th><th>Status</th></tr></thead>
+          <tbody id="edit-tbody"></tbody>
+        </table>
+      </div>
+      <div style="margin-top:12px;text-align:right">
+        <button class="btn btn-success" onclick="saveEditedXlsx()">⬇ Save Edited Sheet</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
