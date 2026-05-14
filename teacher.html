@@ -15,12 +15,6 @@ import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, deleteDoc, g
   from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
 // ─── PASTE YOUR FIREBASE CONFIG HERE ────────────────────────────────
-// Import the functions you need from the SDKs you need
-
-// TODO: Add SDKs for Firebase products that you want to use
-// https://firebase.google.com/docs/web/setup#available-libraries
-
-// Your web app's Firebase configuration
 const firebaseConfig = {
   apiKey: "AIzaSyBXR7EKuWnz8IdALrtudKdzvlgv2vnb7B8",
   authDomain: "attendance-efa5a.firebaseapp.com",
@@ -29,10 +23,6 @@ const firebaseConfig = {
   messagingSenderId: "304058052339",
   appId: "1:304058052339:web:45ae34491eff7ebf715186"
 };
-
-
-// Initialize Firebase
-
 // ────────────────────────────────────────────────────────────────────
 
 const app = initializeApp(firebaseConfig);
@@ -425,8 +415,35 @@ function todayDDMMYYYY() {
           d.getFullYear()].join('/');
 }
 
-// Set default date
-document.getElementById('session-date').value = todayDDMMYYYY();
+// ─── WIRE UP ALL EVENTS AFTER DOM IS READY ───────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('session-date').value = todayDDMMYYYY();
+
+  document.getElementById('toggle-btn')
+    .addEventListener('click', toggleSession);
+
+  document.getElementById('download-btn')
+    .addEventListener('click', downloadXlsx);
+
+  document.getElementById('load-dates-btn')
+    .addEventListener('click', loadPastDate);
+
+  document.getElementById('save-edit-btn')
+    .addEventListener('click', saveEditedXlsx);
+
+  document.getElementById('edit-date-select')
+    .addEventListener('change', loadEditTable);
+
+  document.getElementById('xlsx-upload')
+    .addEventListener('change', function() {
+      document.getElementById('fn1').textContent = this.files[0]?.name || '';
+    });
+
+  document.getElementById('edit-xlsx-upload')
+    .addEventListener('change', function() {
+      document.getElementById('fn2').textContent = this.files[0]?.name || '';
+    });
+});
 
 </script>
 <style>
@@ -548,7 +565,7 @@ input[type=file]{display:none}
         <p id="session-sub">Configure below and start a session</p>
       </div>
       <div style="display:flex;gap:8px">
-        <button class="btn btn-primary" id="toggle-btn" onclick="toggleSession()">Start Session</button>
+        <button class="btn btn-primary" id="toggle-btn">Start Session</button>
       </div>
     </div>
   </div>
@@ -632,9 +649,9 @@ input[type=file]{display:none}
     <input type="text" id="saved-date" placeholder="DD/MM/YYYY — auto-filled from session" style="background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:8px 12px;color:var(--text);font-family:var(--mono);font-size:12px;outline:none;width:100%;margin-bottom:10px">
     <div class="upload-row">
       <label class="file-label" for="xlsx-upload">📂 Choose .xlsx file</label>
-      <input type="file" id="xlsx-upload" accept=".xlsx" onchange="document.getElementById('fn1').textContent=this.files[0]?.name||''">
+      <input type="file" id="xlsx-upload" accept=".xlsx">
       <span class="file-name" id="fn1">No file chosen</span>
-      <button class="btn btn-success" onclick="downloadXlsx()">⬇ Download Updated Sheet</button>
+      <button class="btn btn-success" id="download-btn">⬇ Download Updated Sheet</button>
     </div>
   </div>
 
@@ -646,14 +663,14 @@ input[type=file]{display:none}
     </p>
     <div class="upload-row" style="margin-bottom:10px">
       <label class="file-label" for="edit-xlsx-upload">📂 Choose .xlsx file</label>
-      <input type="file" id="edit-xlsx-upload" accept=".xlsx" onchange="document.getElementById('fn2').textContent=this.files[0]?.name||''">
+      <input type="file" id="edit-xlsx-upload" accept=".xlsx">
       <span class="file-name" id="fn2">No file chosen</span>
-      <button class="btn btn-primary btn-sm" onclick="loadPastDate()">Load Dates</button>
+      <button class="btn btn-primary btn-sm" id="load-dates-btn">Load Dates</button>
     </div>
     <div id="edit-date-row" style="display:none;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
       <div class="input-group" style="flex:1;min-width:160px">
         <label>Select Date to Edit</label>
-        <select id="edit-date-select" onchange="loadEditTable()" style="background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:8px 12px;color:var(--text);font-family:var(--mono);font-size:12px;outline:none">
+        <select id="edit-date-select" style="background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:8px 12px;color:var(--text);font-family:var(--mono);font-size:12px;outline:none">
         </select>
       </div>
     </div>
@@ -665,7 +682,7 @@ input[type=file]{display:none}
         </table>
       </div>
       <div style="margin-top:12px;text-align:right">
-        <button class="btn btn-success" onclick="saveEditedXlsx()">⬇ Save Edited Sheet</button>
+        <button class="btn btn-success" id="save-edit-btn">⬇ Save Edited Sheet</button>
       </div>
     </div>
   </div>
