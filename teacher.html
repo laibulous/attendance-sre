@@ -408,12 +408,12 @@ function setBadge(active) {
     : '<span class="dot"></span> Inactive';
 }
 
-function todayDDMMYYYY() {
-  const d = new Date();
-  return [String(d.getDate()).padStart(2,'0'),
-          String(d.getMonth()+1).padStart(2,'0'),
-          d.getFullYear()].join('/');
-}
+//function todayDDMMYYYY() {
+//  const d = new Date();
+ // return [String(d.getDate()).padStart(2,'0'),
+   //       String(d.getMonth()+1).padStart(2,'0'),
+     //     d.getFullYear()].join('/');
+//}
 
 // ─── WIRE UP ALL EVENTS AFTER DOM IS READY ───────────────────────
 document.addEventListener('DOMContentLoaded', () => {
